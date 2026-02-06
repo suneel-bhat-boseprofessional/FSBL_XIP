@@ -1719,11 +1719,7 @@ SFDP_StatusTypeDef SFDP_BuildGenericDriver(EXTMEM_DRIVER_NOR_SFDP_ObjectTypeDef 
   {
     Object->sfdp_private.DriverInfo.WELPosition     = 1;
     Object->sfdp_private.DriverInfo.WELBusyPolarity = 0;
-  }
 
-  if (Object->sfdp_private.DriverInfo.WELPosition     != 1 || 
-      Object->sfdp_private.DriverInfo.WELBusyPolarity != 0)
-  {
     /*
      *   WIP : Status register read management
      *         Basic D14 Status register Polling device Busy
@@ -2256,69 +2252,6 @@ SFDP_StatusTypeDef SFDP_BuildGenericDriver(EXTMEM_DRIVER_NOR_SFDP_ObjectTypeDef 
         goto error;
       }
     }
-  }
-
-  /* Manufacturer-specific overrides for write enable command (must be at end to avoid being overridden) */
-  if (Object->sfdp_private.ManuID == 0xC2) /* Macronix manufacturer ID */
-  {
-    static volatile uint32_t debug_macronix_override = 0x1234; // Debug: verify override is executed
-    (void)debug_macronix_override; // Suppress unused variable warning
-    
-    /* MX25L6433F and other Macronix NOR flash: Force correct parameters */
-    
-    /* Write Enable parameters */
-    Object->sfdp_private.DriverInfo.WriteWELCommand = SFDP_DRIVER_WRITE_ENABLE_06H_COMMAND; // 0x06
-    Object->sfdp_private.DriverInfo.ReadWELCommand = SFDP_DRIVER_READ_STATUS_REGISTER_COMMAND; // 0x05  
-    Object->sfdp_private.DriverInfo.WELPosition = 1;        // WEL bit is at position 1
-    Object->sfdp_private.DriverInfo.WELBusyPolarity = 0;    // WEL=1 means write enabled
-    Object->sfdp_private.DriverInfo.WELAddress = 0;         // Status register address 0
-    
-    /* Basic commands - Use standard 1-wire interface for MX25L6433F */
-    Object->sfdp_private.DriverInfo.ReadInstruction = 0x03; // 0x03 - Standard Read Data
-    Object->sfdp_private.DriverInfo.PageProgramInstruction = 0x02; // 0x02 - Standard Page Program
-    
-    /* Erase timing parameters for MX25L6433F (64Mbit) */
-    Object->sfdp_private.DriverInfo.EraseChipTiming = 120000; // 120 seconds max chip erase
-    if (Object->sfdp_private.DriverInfo.EraseType1Timing == 0) Object->sfdp_private.DriverInfo.EraseType1Timing = 250;   // 4KB sector erase: 250ms max
-    if (Object->sfdp_private.DriverInfo.EraseType2Timing == 0) Object->sfdp_private.DriverInfo.EraseType2Timing = 1000;  // 32KB block erase: 1s max  
-    if (Object->sfdp_private.DriverInfo.EraseType3Timing == 0) Object->sfdp_private.DriverInfo.EraseType3Timing = 2000;  // 64KB block erase: 2s max
-    
-    /* Status register parameters for WIP (Write In Progress) */
-    Object->sfdp_private.DriverInfo.ReadWIPCommand = SFDP_DRIVER_READ_STATUS_REGISTER_COMMAND; // 0x05
-    Object->sfdp_private.DriverInfo.WIPPosition = 0;         // WIP bit at position 0
-    Object->sfdp_private.DriverInfo.WIPBusyPolarity = 0;     // WIP=1 means busy
-    
-    /* Ensure correct page size for MX25L6433F */
-    Object->sfdp_private.PageSize = 256; // Force 256-byte page size (0x100)
-    
-    /* Clear block protection for MX25L6433F - this is critical for programming */
-    
-    /* Method 1: Standard WREN + WRSR approach */
-    uint8_t status_reg = 0x00; // Clear all protection bits (BP3,BP2,BP1,BP0 = 0000)
-    (void)SAL_XSPI_CommandSendData(&Object->sfdp_private.SALObject, SFDP_DRIVER_WRITE_ENABLE_06H_COMMAND, NULL, 0); // Write Enable
-    HAL_Delay(1); // Ensure WREN setup
-    (void)SAL_XSPI_CommandSendData(&Object->sfdp_private.SALObject, 0x01, &status_reg, 1); // Write Status Register (WRSR) - clear protection
-    HAL_Delay(5); // Wait for status register write completion
-    
-    /* Method 2: Verify and retry if needed */
-    uint8_t status_readback = 0xFF;
-    (void)SAL_XSPI_SendReadCommand(&Object->sfdp_private.SALObject, 0x05, &status_readback, 1); // Read Status Register
-    if (status_readback & 0x7C) // Check if BP3,BP2,BP1,BP0,TB bits are still set
-    {
-      /* Try EWSR (Enable Write Status Register) approach for stubborn protection */
-      (void)SAL_XSPI_CommandSendData(&Object->sfdp_private.SALObject, 0x50, NULL, 0); // EWSR
-      HAL_Delay(1);
-      (void)SAL_XSPI_CommandSendData(&Object->sfdp_private.SALObject, 0x01, &status_reg, 1); // WRSR again
-      HAL_Delay(10);
-      
-      /* Try Global Block Unprotect if available */
-      (void)SAL_XSPI_CommandSendData(&Object->sfdp_private.SALObject, SFDP_DRIVER_WRITE_ENABLE_06H_COMMAND, NULL, 0);
-      HAL_Delay(1);
-      (void)SAL_XSPI_CommandSendData(&Object->sfdp_private.SALObject, 0x98, NULL, 0); // GBULK (Global Block Unlock)
-      HAL_Delay(10);
-    }
-    
-    debug_macronix_override = 0x5678; // Debug: override completed
   }
 
 error :

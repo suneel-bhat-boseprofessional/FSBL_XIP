@@ -41,10 +41,10 @@ extern "C" {
 
 #define SFDP_DRIVER_READ_STATUS_REGISTER_COMMAND             0x05U
 
-#define SFDP_DRIVER_WRITE_ENABLE_50H_COMMAND                 0x06U
+#define SFDP_DRIVER_WRITE_ENABLE_50H_COMMAND                 0x50U
 #define SFDP_DRIVER_WRITE_ENABLE_06H_COMMAND                 0x06U
 
-#define SFDP_DRIVER_ERASE_CHIP_COMMAND                       0xC7U
+#define SFDP_DRIVER_ERASE_CHIP_COMMAND                       0x60U
 
 
 /* Exported types ------------------------------------------------------------*/

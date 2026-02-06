@@ -166,9 +166,6 @@ EXTMEM_DRIVER_NOR_SFDP_StatusTypeDef EXTMEM_DRIVER_NOR_SFDP_Init(void *Periphera
   /* Abort any ongoing XSPI action */
   (void)SAL_XSPI_DisableMapMode(&SFDPObject->sfdp_private.SALObject);
 
-  /* Check and set QE bit of Control Register */
-  (void)SAL_XSPI_EnableQuadMode(&SFDPObject->sfdp_private.SALObject);
-
   /* Analyze the SFDP structure to get driver information */
   SFDP_DEBUG_STR("4 - analyze the SFDP structure to get driver information")
   if (EXTMEM_SFDP_OK != SFDP_GetHeader(SFDPObject, &JEDEC_SFDP_Header))
@@ -322,27 +319,12 @@ EXTMEM_DRIVER_NOR_SFDP_StatusTypeDef EXTMEM_DRIVER_NOR_SFDP_Read(EXTMEM_DRIVER_N
     goto error;
   }
 
-  /* Perform read access using proper address-aware SAL method */
-  if (SFDPObject->sfdp_private.ManuID == 0xC2) /* Macronix manufacturer ID */
+  /* Perform read access using SAL service */
+  if (HAL_OK != SAL_XSPI_Read(&SFDPObject->sfdp_private.SALObject, SFDPObject->sfdp_private.DriverInfo.ReadInstruction,
+                              Address, Data, Size))
   {
-    /* Use SAL_XSPI_Read for address operations (Read needs address) */
-    if (HAL_OK != SAL_XSPI_Read(&SFDPObject->sfdp_private.SALObject, 0x03,
-                                Address, Data, Size))
-    {
-      DEBUG_DRIVER_ERROR("EXTMEM_DRIVER_NOR_SFDP_Read::ERROR_READ")
-      retr = EXTMEM_DRIVER_NOR_SFDP_ERROR_READ;
-    }
-  }
-  else
-  {
-    /* Standard read for other manufacturers */
-    uint8_t readCmd = SFDPObject->sfdp_private.DriverInfo.ReadInstruction;
-    if (HAL_OK != SAL_XSPI_Read(&SFDPObject->sfdp_private.SALObject, readCmd,
-                                Address, Data, Size))
-    {
-      DEBUG_DRIVER_ERROR("EXTMEM_DRIVER_NOR_SFDP_Read::ERROR_READ")
-      retr = EXTMEM_DRIVER_NOR_SFDP_ERROR_READ;
-    }
+    DEBUG_DRIVER_ERROR("EXTMEM_DRIVER_NOR_SFDP_Read::ERROR_READ")
+    retr = EXTMEM_DRIVER_NOR_SFDP_ERROR_READ;
   }
 error :
   return retr;
@@ -366,14 +348,6 @@ EXTMEM_DRIVER_NOR_SFDP_StatusTypeDef EXTMEM_DRIVER_NOR_SFDP_Write(EXTMEM_DRIVER_
   uint32_t local_Address = Address;
   uint32_t local_Data = (uint32_t)Data;
   uint32_t misalignment = 0u;
-  static volatile uint32_t debug_page_info = 0; // Debug: page size and alignment info
-  (void)debug_page_info; // Suppress unused variable warning
-
-  /* Debug info for Macronix devices */
-  if (SFDPObject->sfdp_private.ManuID == 0xC2)
-  {
-    debug_page_info = (SFDPObject->sfdp_private.PageSize << 16) | (local_Address & 0xFFFF); // [PageSize:Address_low16]
-  }
 
   if (0u != (local_Address % SFDPObject->sfdp_private.PageSize))
   {
@@ -402,41 +376,22 @@ EXTMEM_DRIVER_NOR_SFDP_StatusTypeDef EXTMEM_DRIVER_NOR_SFDP_Write(EXTMEM_DRIVER_
       goto error;
     }
 
-    /* Use proper address-aware commands for Macronix devices like mass erase WEL */
-    if (SFDPObject->sfdp_private.ManuID == 0xC2) /* Macronix manufacturer ID */
+    /* Wait for WEL flag */
+    retr = driver_set_FlagWEL(SFDPObject, DRIVER_DEFAULT_TIMEOUT);
+    if (EXTMEM_DRIVER_NOR_SFDP_OK != retr)
     {
-      /* Use the same WEL method as successful mass erase */
-      (void)SAL_XSPI_CommandSendData(&SFDPObject->sfdp_private.SALObject, 0x06, NULL, 0); // WREN
-      
-      /* Use SAL_XSPI_Write for address+data operations (Page Program needs address) */
-      if (HAL_OK != SAL_XSPI_Write(&SFDPObject->sfdp_private.SALObject,
-                                   0x02, // PP command
-                                   local_Address, (uint8_t *)local_Data, size_write))
-      {
-        DEBUG_DRIVER_ERROR("EXTMEM_DRIVER_NOR_SFDP_Write::ERROR_WRITE")
-        retr = EXTMEM_DRIVER_NOR_SFDP_ERROR_WRITE;
-        goto error;
-      }
+      DEBUG_DRIVER_ERROR("EXTMEM_DRIVER_NOR_SFDP_Write::ERROR_CHECK_WEL")
+      goto error;
     }
-    else
-    {
-      /* Standard sequence for other manufacturers */
-      retr = driver_set_FlagWEL(SFDPObject, DRIVER_DEFAULT_TIMEOUT);
-      if (EXTMEM_DRIVER_NOR_SFDP_OK != retr)
-      {
-        DEBUG_DRIVER_ERROR("EXTMEM_DRIVER_NOR_SFDP_Write::ERROR_CHECK_WEL")
-        goto error;
-      }
 
-      uint8_t progCmd = SFDPObject->sfdp_private.DriverInfo.PageProgramInstruction;
-      if (HAL_OK != SAL_XSPI_Write(&SFDPObject->sfdp_private.SALObject,
-                                   progCmd,
-                                   local_Address, (uint8_t *)local_Data, size_write))
-      {
-        DEBUG_DRIVER_ERROR("EXTMEM_DRIVER_NOR_SFDP_Write::ERROR_WRITE")
-        retr = EXTMEM_DRIVER_NOR_SFDP_ERROR_WRITE;
-        goto error;
-      }
+    /* Write the data */
+    if (HAL_OK != SAL_XSPI_Write(&SFDPObject->sfdp_private.SALObject,
+                                 SFDPObject->sfdp_private.DriverInfo.PageProgramInstruction,
+                                 local_Address, (uint8_t *)local_Data, size_write))
+    {
+      DEBUG_DRIVER_ERROR("EXTMEM_DRIVER_NOR_SFDP_Write::ERROR_WRITE")
+      retr = EXTMEM_DRIVER_NOR_SFDP_ERROR_WRITE;
+      goto error;
     }
 
     local_size = local_size - size_write;
@@ -607,70 +562,37 @@ error:
 EXTMEM_DRIVER_NOR_SFDP_StatusTypeDef EXTMEM_DRIVER_NOR_SFDP_MassErase(EXTMEM_DRIVER_NOR_SFDP_ObjectTypeDef *SFDPObject)
 {
   EXTMEM_DRIVER_NOR_SFDP_StatusTypeDef retr;
-  static volatile uint32_t debug_mass_erase_status = 0; // 0=start, 1=busy_check_ok, 2=wel_ok, 3=erase_sent, 4=success, 0x10X=failure_point_X
-  (void)debug_mass_erase_status; // Suppress unused variable warning - used for debugging
   DEBUG_DRIVER((uint8_t *)__func__)
-
-  debug_mass_erase_status = 0; // Starting mass erase
 
   /* Check busy flag */
   retr = driver_check_FlagBUSY(SFDPObject, 1000);
   if (EXTMEM_DRIVER_NOR_SFDP_OK != retr)
   {
-    debug_mass_erase_status = 0x101; // Failure point 1 - initially busy
     DEBUG_DRIVER_ERROR("EXTMEM_DRIVER_NOR_SFDP_read::ERROR_CHECK_BUSY")
     retr = EXTMEM_DRIVER_NOR_SFDP_ERROR_FLASHBUSY;
     goto error;
   }
 
-  debug_mass_erase_status = 1; // Busy check passed
-
-  /* Wait for write enable flag - optimized timing for Macronix */
-  if (SFDPObject->sfdp_private.ManuID == 0xC2) /* Macronix manufacturer ID */
+  /* Wait for write enable flag */
+  retr = driver_set_FlagWEL(SFDPObject, DRIVER_DEFAULT_TIMEOUT);
+  if (EXTMEM_DRIVER_NOR_SFDP_OK != retr)
   {
-    /* Direct WEL command without verification for minimal timing */
-    (void)SAL_XSPI_CommandSendData(&SFDPObject->sfdp_private.SALObject, 0x06, NULL, 0); // WREN
-    debug_mass_erase_status = 2; // WEL sent (assume success)
-  }
-  else
-  {
-    /* Use standard WEL function for other manufacturers */
-    retr = driver_set_FlagWEL(SFDPObject, DRIVER_DEFAULT_TIMEOUT);
-    if (EXTMEM_DRIVER_NOR_SFDP_OK != retr)
-    {
-      debug_mass_erase_status = 0x102; // Failure point 2 - WEL failed
-      DEBUG_DRIVER_ERROR("EXTMEM_DRIVER_NOR_SFDP_read::ERROR_CHECK_WEL")
-      goto error;
-    }
-    debug_mass_erase_status = 2; // WEL passed
+    DEBUG_DRIVER_ERROR("EXTMEM_DRIVER_NOR_SFDP_read::ERROR_CHECK_WEL")
+    goto error;
   }
 
   /* Launch mass erase command */
   (void)SAL_XSPI_CommandSendData(&SFDPObject->sfdp_private.SALObject, SFDP_DRIVER_ERASE_CHIP_COMMAND, NULL, 0);
-  debug_mass_erase_status = 3; // Chip erase command sent
 
-  /* Check busy flag : use correct timing for Macronix devices */
-  uint32_t eraseTimeout;
-  if (SFDPObject->sfdp_private.ManuID == 0xC2) /* Macronix manufacturer ID */
-  {
-    eraseTimeout = 120000; // MX25L6433F: 120 seconds maximum chip erase time
-  }
-  else
-  {
-    eraseTimeout = (SFDPObject->sfdp_private.DriverInfo.EraseChipTiming > 0) ? 
-                   SFDPObject->sfdp_private.DriverInfo.EraseChipTiming : 60000; // Default 60s if not set
-  }
-  
-  retr = driver_check_FlagBUSY(SFDPObject, eraseTimeout);
+
+  /* Check busy flag : time to used should be set according the memory characteristic */
+  retr = driver_check_FlagBUSY(SFDPObject, SFDPObject->sfdp_private.DriverInfo.EraseChipTiming);
   if (EXTMEM_DRIVER_NOR_SFDP_OK != retr)
   {
-    debug_mass_erase_status = 0x103; // Failure point 3 - erase timeout
     DEBUG_DRIVER_ERROR("EXTMEM_DRIVER_NOR_SFDP_MassErase::ERROR_CHECK_BUSY_ON_EXIT")
     retr = EXTMEM_DRIVER_NOR_SFDP_ERROR_ERASE_TIMEOUT;
     goto error;
   }
-
-  debug_mass_erase_status = 4; // Success
 
 error:
   return retr;
@@ -729,32 +651,6 @@ EXTMEM_DRIVER_NOR_SFDP_StatusTypeDef EXTMEM_DRIVER_NOR_SFDP_SectorErase(EXTMEM_D
   {
     retr = EXTMEM_DRIVER_NOR_SFDP_ERROR_SECTORTYPE_UNAVAILABLE;
     goto error;
-  }
-  
-  /* Use correct erase commands for Macronix devices (MX25L6433F) */
-  if (SFDPObject->sfdp_private.ManuID == 0xC2) /* Macronix manufacturer ID */
-  {
-    switch (SectorType)
-    {
-      case EXTMEM_DRIVER_NOR_SFDP_SECTOR_TYPE1:
-        command = 0x20; // SE - 4KB Sector Erase
-        size = 12;      // 4KB = 2^12
-        timeout = 250;  // 250ms max
-        break;
-      case EXTMEM_DRIVER_NOR_SFDP_SECTOR_TYPE2:
-        command = 0x52; // BE32K - 32KB Block Erase  
-        size = 15;      // 32KB = 2^15
-        timeout = 1000; // 1s max
-        break;
-      case EXTMEM_DRIVER_NOR_SFDP_SECTOR_TYPE3:
-        command = 0xD8; // BE64K - 64KB Block Erase
-        size = 16;      // 64KB = 2^16  
-        timeout = 2000; // 2s max
-        break;
-      default:
-        /* Keep original values for unsupported sector types */
-        break;
-    }
   }
 
   /* Check address alignment */
@@ -866,64 +762,26 @@ EXTMEM_DRIVER_NOR_SFDP_StatusTypeDef driver_set_FlagWEL(EXTMEM_DRIVER_NOR_SFDP_O
                                                         uint32_t Timeout)
 {
   EXTMEM_DRIVER_NOR_SFDP_StatusTypeDef retr = EXTMEM_DRIVER_NOR_SFDP_ERROR_WRITEENABLE;
-  static volatile uint32_t debug_wel_status = 0; // 0=start, 1=cmd_sent, 2=check_start, 3=success, 0x20X=failure
-  (void)debug_wel_status; // Suppress unused variable warning - used for debugging
   DEBUG_DRIVER((uint8_t *)__func__)
 
-  debug_wel_status = 0; // Starting WEL
-
-  /* Send the command write enable - use correct command for Macronix devices */
-  uint8_t writeCmd = (SFDPObject->sfdp_private.ManuID == 0xC2) ? 0x06 : SFDPObject->sfdp_private.DriverInfo.WriteWELCommand;
-  (void)SAL_XSPI_CommandSendData(&SFDPObject->sfdp_private.SALObject, writeCmd, NULL, 0);
-  debug_wel_status = 1; // WEL command sent
+  /* Send the command write enable */
+  (void)SAL_XSPI_CommandSendData(&SFDPObject->sfdp_private.SALObject,
+                                 SFDPObject->sfdp_private.DriverInfo.WriteWELCommand, NULL, 0);
 
   /* Wait for write enable status */
   if (0u != SFDPObject->sfdp_private.DriverInfo.ReadWELCommand)
   {
-    debug_wel_status = 2; // Starting status check
-    
-    /* Use correct WEL parameters for Macronix devices (MX25L6433F) */
-    if (SFDPObject->sfdp_private.ManuID == 0xC2) /* Macronix manufacturer ID */
+    /* Check if flag write enable is enabled */
+    if (HAL_OK == SAL_XSPI_CheckStatusRegister(&SFDPObject->sfdp_private.SALObject,
+                                               SFDPObject->sfdp_private.DriverInfo.ReadWELCommand,
+                                               SFDPObject->sfdp_private.DriverInfo.WELAddress,
+                                               ((SFDPObject->sfdp_private.DriverInfo.WELBusyPolarity == 0u) ? 1u : 0u)
+                                               << SFDPObject->sfdp_private.DriverInfo.WELPosition,
+                                               1u << SFDPObject->sfdp_private.DriverInfo.WELPosition,
+                                               SFDPObject->sfdp_private.ManuID, Timeout))
     {
-      /* MX25L6433F: WEL bit is at position 1, polarity 0, address 0 */
-      if (HAL_OK == SAL_XSPI_CheckStatusRegister(&SFDPObject->sfdp_private.SALObject,
-                                                 0x05,  // Read Status Register command
-                                                 0x00,  // Status register address
-                                                 0x02,  // Expected value: bit 1 set (WEL enabled)
-                                                 0x02,  // Mask: check bit 1
-                                                 SFDPObject->sfdp_private.ManuID, Timeout))
-      {
-        debug_wel_status = 3; // Success - WEL flag set
-        retr = EXTMEM_DRIVER_NOR_SFDP_OK;
-      }
-      else
-      {
-        debug_wel_status = 0x201; // Failure - WEL flag not set
-      }
+      retr = EXTMEM_DRIVER_NOR_SFDP_OK;
     }
-    else
-    {
-      /* Use original SFDP parameters for other manufacturers */
-      if (HAL_OK == SAL_XSPI_CheckStatusRegister(&SFDPObject->sfdp_private.SALObject,
-                                                 SFDPObject->sfdp_private.DriverInfo.ReadWELCommand,
-                                                 SFDPObject->sfdp_private.DriverInfo.WELAddress,
-                                                 ((SFDPObject->sfdp_private.DriverInfo.WELBusyPolarity == 0u) ? 1u : 0u)
-                                                 << SFDPObject->sfdp_private.DriverInfo.WELPosition,
-                                                 1u << SFDPObject->sfdp_private.DriverInfo.WELPosition,
-                                                 SFDPObject->sfdp_private.ManuID, Timeout))
-      {
-        debug_wel_status = 3; // Success - WEL flag set
-        retr = EXTMEM_DRIVER_NOR_SFDP_OK;
-      }
-      else
-      {
-        debug_wel_status = 0x201; // Failure - WEL flag not set
-      }
-    }
-  }
-  else
-  {
-    debug_wel_status = 0x202; // Error - No ReadWELCommand
   }
   return retr;
 }

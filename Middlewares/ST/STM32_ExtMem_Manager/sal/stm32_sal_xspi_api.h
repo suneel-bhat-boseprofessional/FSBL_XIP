@@ -47,7 +47,6 @@ extern "C" {
 HAL_StatusTypeDef SAL_XSPI_SetClock(SAL_XSPI_ObjectTypeDef *SalXspi, uint32_t ClockIn, uint32_t ClockRequested,
                                     uint32_t *ClockReal);
 HAL_StatusTypeDef SAL_XSPI_Init(SAL_XSPI_ObjectTypeDef *SalXspi, void *HALHandle);
-HAL_StatusTypeDef SAL_XSPI_EnableQuadMode(SAL_XSPI_ObjectTypeDef *SalXspi);
 HAL_StatusTypeDef SAL_XSPI_MemoryConfig(SAL_XSPI_ObjectTypeDef *SalXspi, SAL_XSPI_MemParamTypeTypeDef ParametersType,
                                         void *ParamVal);
 HAL_StatusTypeDef SAL_XSPI_GetSFDP(SAL_XSPI_ObjectTypeDef *SalXspi, uint32_t Address,

@@ -117,10 +117,6 @@ const uint8_t phylink_string[][17] = {"PHY_LINK_1S1S1S",
 
 #define SAL_XSPI_TIMEOUT_DEFAULT_VALUE (100U)
 
-/* Status Register Bits */
-#define SR_WIP_MASK   0x01
-#define SR_QE_MASK    0x40
-
 /**
   * @}
   */
@@ -266,74 +262,6 @@ HAL_StatusTypeDef SAL_XSPI_Init(SAL_XSPI_ObjectTypeDef *SalXspi, void *HALHandle
 #endif /* USE_HAL_XSPI_REGISTER_CALLBACKS */
 
   return HAL_OK;
-}
-
-//Prashanth's new code
-
-/**
-  * @brief  Enables the Quad Enable (QE) bit on the MX25L6433F.
-  * @param  hxspi: XSPI handle
-  * @retval HAL Status
-  */
-//HAL_StatusTypeDef SAL_XSPI_EnableQuadMode(XSPI_HandleTypeDef *hxspi) {
-HAL_StatusTypeDef SAL_XSPI_EnableQuadMode(SAL_XSPI_ObjectTypeDef *SalXspi) {
-    XSPI_RegularCmdTypeDef  sCommand = {0};
-    XSPI_AutoPollingTypeDef sConfig  = {0};
-    uint8_t status_reg = 0;
-
-    /* --- Base Configuration for the XSPI Phase --- */
-    sCommand.OperationType      = HAL_XSPI_OPTYPE_COMMON_CFG;
-    sCommand.IOSelect           = HAL_XSPI_SELECT_IO_7_0;
-    sCommand.InstructionMode    = HAL_XSPI_INSTRUCTION_1_LINE;
-    sCommand.InstructionWidth   = HAL_XSPI_INSTRUCTION_8_BITS;
-    sCommand.InstructionDTRMode = HAL_XSPI_INSTRUCTION_DTR_DISABLE;
-    sCommand.AddressMode        = HAL_XSPI_ADDRESS_NONE;
-    sCommand.AlternateBytesMode = HAL_XSPI_ALT_BYTES_NONE;
-    sCommand.DataDTRMode        = HAL_XSPI_DATA_DTR_DISABLE;
-    sCommand.DQSMode            = HAL_XSPI_DQS_DISABLE;
-    sCommand.DummyCycles        = 0;
-
-    /* 1. Read current Status Register to see if QE is already set */
-    sCommand.Instruction        = 0x05; //CMD_RDSR;
-    sCommand.DataMode           = HAL_XSPI_DATA_1_LINE;
-    sCommand.DataLength         = 1;
-
-    if (HAL_XSPI_Command(SalXspi->hxspi, &sCommand, HAL_XSPI_TIMEOUT_DEFAULT_VALUE) != HAL_OK) return HAL_ERROR;
-    if (HAL_XSPI_Receive(SalXspi->hxspi, &status_reg, HAL_XSPI_TIMEOUT_DEFAULT_VALUE) != HAL_OK) return HAL_ERROR;
-
-    if (status_reg & SR_QE_MASK) return HAL_OK;
-
-    /* 2. Send Write Enable (WREN) */
-    sCommand.Instruction        = 0x06; //CMD_WREN;
-    sCommand.DataMode           = HAL_XSPI_DATA_NONE;
-    sCommand.DataLength         = 0;
-    if (HAL_XSPI_Command(SalXspi->hxspi, &sCommand, HAL_XSPI_TIMEOUT_DEFAULT_VALUE) != HAL_OK) return HAL_ERROR;
-
-    /* 3. Write Status Register (WRSR) with QE bit set to 1 */
-    status_reg |= SR_QE_MASK;
-    sCommand.Instruction        = 0x01; //CMD_WRSR;
-    sCommand.DataMode           = HAL_XSPI_DATA_1_LINE;
-    sCommand.DataLength         = 1;
-
-    if (HAL_XSPI_Command(SalXspi->hxspi, &sCommand, HAL_XSPI_TIMEOUT_DEFAULT_VALUE) != HAL_OK) return HAL_ERROR;
-    if (HAL_XSPI_Transmit(SalXspi->hxspi, &status_reg, HAL_XSPI_TIMEOUT_DEFAULT_VALUE) != HAL_OK) return HAL_ERROR;
-
-    /* 4. Hardware Auto-Polling to wait for WIP (Write In Progress) to clear */
-    /* Step A: Tell the XSPI hardware WHICH command to use for polling */
-    sCommand.Instruction        = 0x05; //CMD_RDSR;
-    sCommand.DataMode           = HAL_XSPI_DATA_1_LINE;
-    sCommand.DataLength         = 1;
-    if (HAL_XSPI_Command(SalXspi->hxspi, &sCommand, HAL_XSPI_TIMEOUT_DEFAULT_VALUE) != HAL_OK) return HAL_ERROR;
-
-    /* Step B: Set the polling criteria */
-    sConfig.MatchValue          = 0x00;           // We want Bit 0 to be 0
-    sConfig.MatchMask           = SR_WIP_MASK;    // Only look at Bit 0
-    sConfig.MatchMode           = HAL_XSPI_MATCH_MODE_AND;
-    sConfig.IntervalTime        = 0x10;
-    sConfig.AutomaticStop       = HAL_XSPI_AUTOMATIC_STOP_ENABLE;
-
-    /* Step C: Call the blocking AutoPolling function */
-    return HAL_XSPI_AutoPolling(SalXspi->hxspi, &sConfig, HAL_XSPI_TIMEOUT_DEFAULT_VALUE);
 }
 
 /**
@@ -672,48 +600,55 @@ error:
 HAL_StatusTypeDef SAL_XSPI_Read(SAL_XSPI_ObjectTypeDef *SalXspi, uint8_t Command, uint32_t Address, uint8_t *Data,
                                 uint32_t DataSize)
 {
-    HAL_StatusTypeDef retr;
-    XSPI_RegularCmdTypeDef sCommand = {0};
+  HAL_StatusTypeDef retr;
+  XSPI_RegularCmdTypeDef s_command = SalXspi->Commandbase;
 
-    sCommand.OperationType      = HAL_XSPI_OPTYPE_COMMON_CFG;
-    sCommand.IOSelect           = HAL_XSPI_SELECT_IO_7_0;
+  /* Initialize the read ID command */
+  s_command.Instruction = XSPI_FormatCommand(SalXspi->CommandExtension, s_command.InstructionWidth, Command);
 
-    /* Instruction */
-    sCommand.InstructionMode    = HAL_XSPI_INSTRUCTION_1_LINE;
-    sCommand.InstructionWidth   = HAL_XSPI_INSTRUCTION_8_BITS;
-    sCommand.InstructionDTRMode = HAL_XSPI_INSTRUCTION_DTR_DISABLE;
-    sCommand.Instruction        = 0xeB; // 4READ
+  s_command.Address           = Address;
+  s_command.DataLength        = DataSize;
 
-    /* Address */
-    sCommand.AddressMode        = HAL_XSPI_ADDRESS_4_LINES;
-    sCommand.AddressWidth       = HAL_XSPI_ADDRESS_24_BITS;
-    sCommand.AddressDTRMode     = HAL_XSPI_ADDRESS_DTR_DISABLE;
-    sCommand.Address            = Address;
+  /* DTR management for single/dual/quad */
+  switch (SalXspi->PhyLink)
+  {
+    case PHY_LINK_4S4D4D :
+      s_command.AddressDTRMode = HAL_XSPI_ADDRESS_DTR_ENABLE;
+      s_command.DataDTRMode    = HAL_XSPI_DATA_DTR_ENABLE;
+      s_command.DummyCycles    = SalXspi->DTRDummyCycle;
+      break;
 
-    /* Data */
-    sCommand.DataMode           = HAL_XSPI_DATA_4_LINES;
-    sCommand.DataLength         = DataSize;
-    sCommand.DataDTRMode        = HAL_XSPI_DATA_DTR_DISABLE;
-    sCommand.DQSMode            = HAL_XSPI_DQS_DISABLE;
-    sCommand.DummyCycles        = 6;
+    case PHY_LINK_1S2S2S :
+      s_command.AddressMode    = HAL_XSPI_ADDRESS_2_LINES;
+      s_command.DataMode       = HAL_XSPI_DATA_2_LINES;
+      break;
 
-    /* Configure the command */
-    retr = HAL_XSPI_Command(SalXspi->hxspi, &sCommand, SAL_XSPI_TIMEOUT_DEFAULT_VALUE);
-    if (retr  != HAL_OK)
-    {
-        goto error;
-    }
+    case PHY_LINK_1S1S2S :
+      s_command.DataMode       = HAL_XSPI_DATA_2_LINES;
+      break;
 
-    /* Read data */
-    retr = XSPI_Receive(SalXspi, Data);
+    default :
+      /* Keep default parameters */
+      break;
+  }
+
+  /* Configure the command */
+  retr = HAL_XSPI_Command(SalXspi->hxspi, &s_command, SAL_XSPI_TIMEOUT_DEFAULT_VALUE);
+  if (retr  != HAL_OK)
+  {
+    goto error;
+  }
+
+  /* Read data */
+  retr = XSPI_Receive(SalXspi, Data);
 
 error:
-    if (retr != HAL_OK)
-    {
-        /* Abort any ongoing transaction for the next action */
-        (void)HAL_XSPI_Abort(SalXspi->hxspi);
-    }
-    return retr;
+  if (retr != HAL_OK)
+  {
+    /* Abort any ongoing transaction for the next action */
+    (void)HAL_XSPI_Abort(SalXspi->hxspi);
+  }
+  return retr;
 }
 
 /**
@@ -731,7 +666,6 @@ HAL_StatusTypeDef SAL_XSPI_Write(SAL_XSPI_ObjectTypeDef *SalXspi, uint8_t Comman
   HAL_StatusTypeDef retr;
   XSPI_RegularCmdTypeDef s_command = SalXspi->Commandbase;
 
-#if 0
   /* Initialize the read ID command */
   s_command.Instruction = XSPI_FormatCommand(SalXspi->CommandExtension, s_command.InstructionWidth, Command);
 
@@ -746,48 +680,6 @@ HAL_StatusTypeDef SAL_XSPI_Write(SAL_XSPI_ObjectTypeDef *SalXspi, uint8_t Comman
   {
     goto error;
   }
-#endif
-
-  //Prashanth's changes
-  // s_command is changed to issue 1-4-4 QuadSpi writes
-
-  /* 1. Common Configuration */
-  s_command.OperationType      = HAL_XSPI_OPTYPE_COMMON_CFG;
-  s_command.IOSelect           = HAL_XSPI_SELECT_IO_7_0; // Assuming Port 1
-
-  /* 2. Instruction Phase (1 Line, 8 Bits, SDR) */
-  s_command.InstructionMode    = HAL_XSPI_INSTRUCTION_1_LINE;
-  s_command.InstructionWidth   = HAL_XSPI_INSTRUCTION_8_BITS; // NEW
-  s_command.InstructionDTRMode = HAL_XSPI_INSTRUCTION_DTR_DISABLE; // NEW
-  s_command.Instruction        = 0x38; // 4PP (Quad Page Program)
-
-  /* 3. Address Phase (4 Lines, 24 Bits, SDR) */
-  s_command.AddressMode        = HAL_XSPI_ADDRESS_4_LINES;
-  s_command.AddressWidth       = HAL_XSPI_ADDRESS_24_BITS; // NEW
-  s_command.AddressDTRMode     = HAL_XSPI_ADDRESS_DTR_DISABLE; // NEW
-  s_command.Address            = Address; // Passed into function
-
-  /* 4. Alternate Bytes (None) */
-  s_command.AlternateBytesMode = HAL_XSPI_ALT_BYTES_NONE;
-  s_command.AlternateBytesDTRMode = HAL_XSPI_ALT_BYTES_DTR_DISABLE;
-
-  /* 5. Data Phase (4 Lines, SDR, No DQS) */
-  s_command.DataMode           = HAL_XSPI_DATA_4_LINES;
-  s_command.DataLength         = DataSize; // Passed into function
-  s_command.DataDTRMode        = HAL_XSPI_DATA_DTR_DISABLE; // NEW
-  s_command.DQSMode            = HAL_XSPI_DQS_DISABLE;      // NEW (MX25L doesn't support DQS)
-  s_command.DummyCycles        = 0;    // 4PP has 0 dummy cycles
-
-  /* Send Command Configuration */
-  retr = HAL_XSPI_Command(SalXspi->hxspi, &s_command, SAL_XSPI_TIMEOUT_DEFAULT_VALUE);
-  if (retr != HAL_OK)
-  {
-     (void)HAL_XSPI_Abort(SalXspi->hxspi);
-     goto error;;
-  }
-
-
-  //Prashanth's changes end
 
   /* Transmit data */
   retr = XSPI_Transmit(SalXspi, Data);
@@ -1094,91 +986,44 @@ error:
 HAL_StatusTypeDef SAL_XSPI_EnableMapMode(SAL_XSPI_ObjectTypeDef *SalXspi, uint8_t CommandRead, uint8_t DummyRead,
                                          uint8_t CommandWrite, uint8_t DummyWrite)
 {
-    XSPI_RegularCmdTypeDef sCommand = {0};
-    XSPI_MemoryMappedTypeDef sMemMappedCfg = {0};
+  HAL_StatusTypeDef retr;
+  XSPI_RegularCmdTypeDef s_command = SalXspi->Commandbase;
+  XSPI_MemoryMappedTypeDef sMemMappedCfg = {0};
 
-    /* ============================================================================== */
-    /* 1. COMMAND CONFIGURATION                                                       */
-    /* ============================================================================== */
+  /* Initialize the read ID command */
+  s_command.OperationType = HAL_XSPI_OPTYPE_READ_CFG;
+  s_command.Instruction = XSPI_FormatCommand(SalXspi->CommandExtension, s_command.InstructionWidth, CommandRead);
+  s_command.DummyCycles = DummyRead;
+  /* Configure the read command */
+  retr = HAL_XSPI_Command(SalXspi->hxspi, &s_command, SAL_XSPI_TIMEOUT_DEFAULT_VALUE);
+  if (retr  != HAL_OK)
+  {
+    goto error;
+  }
 
-    sCommand.OperationType      = HAL_XSPI_OPTYPE_READ_CFG;
-    sCommand.IOSelect           = HAL_XSPI_SELECT_IO_7_0;
+  /* Initialize the read ID command */
+  s_command.OperationType     = HAL_XSPI_OPTYPE_WRITE_CFG;
+  s_command.Instruction = XSPI_FormatCommand(SalXspi->CommandExtension, s_command.InstructionWidth, CommandWrite);
+  s_command.DummyCycles = DummyWrite;
+  /* Configure the read command */
+  retr = HAL_XSPI_Command(SalXspi->hxspi, &s_command, SAL_XSPI_TIMEOUT_DEFAULT_VALUE);
+  if (retr  != HAL_OK)
+  {
+    goto error;
+  }
 
-    /* Instruction Phase */
-    sCommand.Instruction        = 0xeb;
-    sCommand.InstructionMode    = HAL_XSPI_INSTRUCTION_1_LINE;
-    sCommand.InstructionWidth   = HAL_XSPI_INSTRUCTION_8_BITS;
-    sCommand.InstructionDTRMode = HAL_XSPI_INSTRUCTION_DTR_DISABLE;
+  /* Activation of memory-mapped mode */
+  sMemMappedCfg.TimeOutActivation  = HAL_XSPI_TIMEOUT_COUNTER_DISABLE;
+  sMemMappedCfg.TimeoutPeriodClock = 0x50;
+  retr = HAL_XSPI_MemoryMapped(SalXspi->hxspi, &sMemMappedCfg);
 
-    /* Address Phase (24-bit) */
-    sCommand.Address            = 0;
-    sCommand.AddressMode        = HAL_XSPI_ADDRESS_4_LINES;
-    sCommand.AddressWidth       = HAL_XSPI_ADDRESS_24_BITS;
-    sCommand.AddressDTRMode     = HAL_XSPI_ADDRESS_DTR_DISABLE;
-
-    /* Alternate Bytes Phase (None) */
-    sCommand.AlternateBytesMode = HAL_XSPI_ALT_BYTES_NONE;
-    sCommand.AlternateBytes     = 0;
-    sCommand.AlternateBytesWidth= HAL_XSPI_ALT_BYTES_8_BITS;
-    sCommand.AlternateBytesDTRMode = HAL_XSPI_ALT_BYTES_DTR_DISABLE;
-
-    /* Data Phase (1-Line MISO) */
-    sCommand.DataMode           = HAL_XSPI_DATA_4_LINES;
-    sCommand.DataLength         = 0;
-    sCommand.DataDTRMode        = HAL_XSPI_DATA_DTR_DISABLE;
-    sCommand.DummyCycles        = 6;
-    sCommand.DQSMode            = HAL_XSPI_DQS_DISABLE;
-
-
-    if (HAL_XSPI_Command(SalXspi->hxspi, &sCommand, HAL_XSPI_TIMEOUT_DEFAULT_VALUE) != HAL_OK)
-    {
-        return HAL_ERROR;
-    }
-
-    /* ======================================================================== */
-    /* STEP 2: CONFIGURE WRITE (WCCR) -> Transitions State to CMD_CFG           */
-    /* ======================================================================== */
-    // Reuse struct, but clear fields specific to Read (like Dummy Cycles)
-    sCommand.OperationType      = HAL_XSPI_OPTYPE_WRITE_CFG;
-
-    // 1-4-4 Write Setup (Quad Page Program - 0x38)
-    sCommand.Instruction        = 0x38; // 4PP (Quad Page Program)
-    sCommand.DummyCycles        = 0;    // Write commands have NO dummy cycles
-
-    // Address and Data modes remain 4_LINES (Same as Read for this chip)
-    // Instruction remains 1_LINE (Same as Read)
-    if (HAL_XSPI_Command(SalXspi->hxspi, &sCommand, HAL_XSPI_TIMEOUT_DEFAULT_VALUE) != HAL_OK)
-    {
-        return HAL_ERROR;
-    }
-    /* CURRENT STATE: HAL_XSPI_STATE_CMD_CFG (Success!) */
-
-
-    /* ============================================================================== */
-    /* 2. MEMORY MAPPED CONFIGURATION                                                 */
-    /* ============================================================================== */
-
-    /* Timeout Counter: Disable */
-    sMemMappedCfg.TimeOutActivation = HAL_XSPI_TIMEOUT_COUNTER_DISABLE;
-    sMemMappedCfg.TimeoutPeriodClock = 0;
-
-    /* Prefetch: ENABLED */
-
-    /* 1. DATA PREFETCH */
-    /*
-       Since the register bit is 'NoPrefetch' (Negative Logic):
-       0 = Prefetch Enabled
-       1 = Prefetch Disabled
-       We hardcode 0U to ensure Prefetch is ENABLED. */
-    sMemMappedCfg.NoPrefetchData = 0U;
-
-    /* 2. AXI PREFETCH */
-    /* The compiler confirmed this macro exists */
-    sMemMappedCfg.NoPrefetchAXI  = HAL_XSPI_AXI_PREFETCH_ENABLE;
-
-    /* Enter Memory Mapped Mode */
-    return HAL_XSPI_MemoryMapped(SalXspi->hxspi, &sMemMappedCfg);
-
+error:
+  if (retr != HAL_OK)
+  {
+    /* Abort any ongoing transaction for the next action */
+    (void)HAL_XSPI_Abort(SalXspi->hxspi);
+  }
+  return retr;
 }
 
 /**
